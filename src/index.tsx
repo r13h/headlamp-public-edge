@@ -117,7 +117,21 @@ function Dashboard() {
     return {host,source:`HTTPRoute ${route.metadata.namespace}/${route.metadata.name}`,target:authority ? ingressTargets(authority) : '-',edge:annotation(authority,'networking.re8ch.com/selected-public-edge') || '-',path:parents,backends,nodes,state:accepted ? 'Accepted' : 'Problem',managed:Boolean(authority)};
   }));
 
-  const discoveredRows=[...ingressRows,...routeRows];
+  const externalRows=externalSites.flatMap(site=>(site.hostnames || []).map(host=>({
+    host,
+    source:`External site ${site.name}`,
+    target:site.origin || '-',
+    edge:'-',
+    path:site.delivery || 'External',
+    backends:site.origin || '-',
+    nodes:'-',
+    state:'Read only',
+    managed:false,
+    project:site.name,
+    sourceOfTruth:site.sourceOfTruth,
+    notes:site.notes || '-',
+  })));
+  const discoveredRows=[...ingressRows,...routeRows,...externalRows];
   const ownershipFor=(zone:any)=>{
     if (!zone || zone.mode==='External') return zone?.mode || 'Unmanaged';
     const release:any=(helmReleases || []).map(resourceData).find((item:any)=>(item.spec?.values?.domainFilters || []).includes(zone.zone));
@@ -142,6 +156,10 @@ function Dashboard() {
       path:combine(rows.map((row:any)=>row.path)),
       backends:combine(rows.map((row:any)=>row.backends)),
       nodes:combine(rows.map((row:any)=>row.nodes)),
+      projects:combine(rows.map((row:any)=>row.project || '-')),
+      sourceOfTruth:combine(rows.map((row:any)=>row.sourceOfTruth || '-')),
+      notes:combine(rows.map((row:any)=>row.notes || '-')),
+      readOnly:rows.some((row:any)=>row.state==='Read only'),
       declarations:rows.length,
     };
   }).sort((a:any,b:any)=>a.zone.localeCompare(b.zone) || a.host.localeCompare(b.host));
@@ -167,25 +185,15 @@ function Dashboard() {
     <SectionBox title={`Domains (${visibleDomainRows.length}/${domainRows.length})`}>
       <Table data={visibleDomainRows} columns={[
         {header:'Hostname',accessorKey:'host'},
-        {header:'DNS zone',accessorKey:'zone'},
         {header:'Provider',accessorKey:'provider'},
-        {header:'DNS ownership',accessorFn:(x:any)=><StatusLabel status={x.mode==='Managed'?'success':x.mode==='Dry run'?'warning':x.mode==='External'?'info':'error'}>{x.mode}</StatusLabel>},
+        {header:'DNS ownership',accessorFn:(x:any)=><StatusLabel status={x.mode==='Managed'?'success':x.mode==='Dry run'?'warning':x.mode==='External'||x.readOnly?'info':'error'}>{x.readOnly ? 'Read only' : x.mode}</StatusLabel>},
+        {header:'Project',accessorKey:'projects'},
         {header:'Declared by',accessorFn:(x:any)=>`${x.source}${x.declarations > 1 ? ` (${x.declarations})` : ''}`},
         {header:'DNS target',accessorKey:'target'},
         {header:'Selected exit',accessorKey:'edge'},
         {header:'Traffic path',accessorKey:'path'},
         {header:'Backend service',accessorKey:'backends'},
         {header:'Pod nodes',accessorKey:'nodes'},
-      ] as any}/>
-    </SectionBox>
-    <SectionBox title={`External sites · read only (${externalSites.length})`}>
-      <Table data={externalSites} columns={[
-        {header:'Project',accessorKey:'name'},
-        {header:'Hostnames',accessorFn:(x:any)=>(x.hostnames || []).join(', ') || '-'},
-        {header:'Provider',accessorKey:'provider'},
-        {header:'Delivery',accessorKey:'delivery'},
-        {header:'Origin',accessorKey:'origin'},
-        {header:'Control',accessorFn:(x:any)=><StatusLabel status="info">{x.dnsMode || 'Read only'}</StatusLabel>},
         {header:'Source of truth',accessorKey:'sourceOfTruth'},
         {header:'Notes',accessorKey:'notes'},
       ] as any}/>
