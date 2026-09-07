@@ -1,10 +1,29 @@
 import { K8s, registerRoute, registerSidebarEntry } from '@kinvolk/headlamp-plugin/lib';
 import { SectionBox, StatusLabel, Table } from '@kinvolk/headlamp-plugin/lib/components/common';
 import { makeCustomResourceClass } from '@kinvolk/headlamp-plugin/lib/lib/k8s/crd';
-import { Alert, Box, Chip, Typography } from '@mui/material';
+import { Alert, Box, Chip, Tab, Tabs, Typography } from '@mui/material';
+import { useState } from 'react';
 
 const PublicEdge = makeCustomResourceClass({apiInfo:[{group:'networking.re8ch.com',version:'v1alpha1'}],kind:'PublicEdge',pluralName:'publicedges',singularName:'publicedge',isNamespaced:false});
 const HTTPRoute = K8s.ResourceClasses.HTTPRoute;
+const HelmRelease = makeCustomResourceClass({apiInfo:[{group:'helm.toolkit.fluxcd.io',version:'v2'}],kind:'HelmRelease',pluralName:'helmreleases',singularName:'helmrelease',isNamespaced:true});
+
+const dnsZones = [
+  {zone:'gzsijie.com', provider:'Alibaba Cloud ESA DNS', mode:'External'},
+  {zone:'gzsijie.cn', provider:'Alibaba Cloud DNS'},
+  {zone:'mzlumora.com', provider:'Alibaba Cloud DNS'},
+  {zone:'andypy.com', provider:'Tencent Cloud DNSPod'},
+  {zone:'andy4576.com', provider:'Tencent Cloud DNSPod'},
+];
+
+function zoneFor(host:string) {
+  return dnsZones.find(({zone})=>host===zone || host.endsWith(`.${zone}`));
+}
+
+function combine(values:string[]) {
+  const items=[...new Set(values.flatMap(splitNames).filter(x=>x && x!=='-'))];
+  return items.join(', ') || '-';
+}
 
 function condition(item:any, type:string) {
   return item.status?.conditions?.find((x:any)=>x.type===type)?.status === 'True';
@@ -31,7 +50,9 @@ function ingressBackends(ingress:any) {
 }
 
 function Dashboard() {
+  const [selectedZone, setSelectedZone] = useState('all');
   const [edges, edgeError] = PublicEdge.useList({} as any);
+  const [helmReleases] = HelmRelease.useList({} as any);
   const [routes, routeError] = HTTPRoute.useList({} as any);
   const [pods] = K8s.ResourceClasses.Pod.useList({} as any);
   const [slices] = K8s.ResourceClasses.EndpointSlice.useList({} as any);
@@ -67,7 +88,35 @@ function Dashboard() {
     return {host,source:`HTTPRoute ${route.metadata.namespace}/${route.metadata.name}`,target:authority ? ingressTargets(authority) : '-',edge:annotation(authority,'networking.re8ch.com/selected-public-edge') || '-',path:parents,backends,nodes,state:accepted ? 'Accepted' : 'Problem',managed:Boolean(authority)};
   }));
 
-  const domainRows=[...ingressRows,...routeRows].sort((a:any,b:any)=>a.host.localeCompare(b.host));
+  const discoveredRows=[...ingressRows,...routeRows];
+  const ownershipFor=(zone:any)=>{
+    if (!zone || zone.mode==='External') return zone?.mode || 'Unmanaged';
+    const release:any=(helmReleases || []).find((item:any)=>(item.spec?.values?.domainFilters || []).includes(zone.zone));
+    if (!release) return 'Unmanaged';
+    if (release.spec?.suspend) return 'Suspended';
+    const dryRun=release.spec?.values?.extraArgs?.['dry-run'];
+    const ready=(release.status?.conditions || []).some((item:any)=>item.type==='Ready' && item.status==='True');
+    if (!ready) return 'Not ready';
+    return dryRun===true || dryRun==='true' ? 'Dry run' : 'Managed';
+  };
+  const domainRows=[...new Set(discoveredRows.map((row:any)=>row.host))].map(host=>{
+    const rows=discoveredRows.filter((row:any)=>row.host===host);
+    const zone=zoneFor(host);
+    return {
+      host,
+      zone:zone?.zone || 'Unknown',
+      provider:zone?.provider || 'Unassigned',
+      mode:ownershipFor(zone),
+      source:combine(rows.map((row:any)=>row.source)),
+      target:combine(rows.map((row:any)=>row.target)),
+      edge:combine(rows.map((row:any)=>row.edge)),
+      path:combine(rows.map((row:any)=>row.path)),
+      backends:combine(rows.map((row:any)=>row.backends)),
+      nodes:combine(rows.map((row:any)=>row.nodes)),
+      declarations:rows.length,
+    };
+  }).sort((a:any,b:any)=>a.zone.localeCompare(b.zone) || a.host.localeCompare(b.host));
+  const visibleDomainRows=selectedZone==='all' ? domainRows : domainRows.filter((row:any)=>row.zone===selectedZone);
   const dnsRows=(services || []).filter((service:any)=>(service.spec?.ports || []).some((port:any)=>port.port===53 && port.protocol==='UDP')).map((service:any)=>({
     name:`${service.metadata?.namespace || 'default'}/${service.metadata?.name}`,
     type:service.spec?.type || 'ClusterIP',
@@ -81,16 +130,22 @@ function Dashboard() {
     <Typography color="text.secondary">统一查看域名来源、解析目标、公网出口、Gateway/Ingress、后端 Service 与 UDP/53 DNS 服务。配置写入仍由 GitOps 管理。</Typography>
     {(ingressError || serviceError) && <Alert severity="error">无法读取基础网络资源：{String(ingressError || serviceError)}</Alert>}
     {(edgeError || routeError) && <Alert severity="info">PublicEdge 或 Gateway API 尚未启用；现有 Ingress 域名仍会正常汇总。</Alert>}
-    <SectionBox title={`Domains (${domainRows.length})`}>
-      <Table data={domainRows} columns={[
+    <Tabs value={selectedZone} onChange={(_event,value)=>setSelectedZone(value)} variant="scrollable" scrollButtons="auto" sx={{mt:2,borderBottom:1,borderColor:'divider'}}>
+      <Tab value="all" label={`All (${domainRows.length})`}/>
+      {dnsZones.map(({zone})=><Tab key={zone} value={zone} label={`${zone} (${domainRows.filter((row:any)=>row.zone===zone).length})`}/>)}
+    </Tabs>
+    <SectionBox title={`Domains (${visibleDomainRows.length}/${domainRows.length})`}>
+      <Table data={visibleDomainRows} columns={[
         {header:'Hostname',accessorKey:'host'},
-        {header:'Declared by',accessorKey:'source'},
+        {header:'DNS zone',accessorKey:'zone'},
+        {header:'Provider',accessorKey:'provider'},
+        {header:'DNS ownership',accessorFn:(x:any)=><StatusLabel status={x.mode==='Managed'?'success':x.mode==='Dry run'?'warning':x.mode==='External'?'info':'error'}>{x.mode}</StatusLabel>},
+        {header:'Declared by',accessorFn:(x:any)=>`${x.source}${x.declarations > 1 ? ` (${x.declarations})` : ''}`},
         {header:'DNS target',accessorKey:'target'},
         {header:'Selected exit',accessorKey:'edge'},
         {header:'Traffic path',accessorKey:'path'},
         {header:'Backend service',accessorKey:'backends'},
         {header:'Pod nodes',accessorKey:'nodes'},
-        {header:'Publication',accessorFn:(x:any)=><StatusLabel status={x.state==='Problem'?'error':x.managed?'success':'warning'}>{x.managed?'Managed':x.state}</StatusLabel>},
       ] as any}/>
     </SectionBox>
     <SectionBox title={`Authoritative DNS services (${dnsRows.length})`}>
@@ -114,7 +169,7 @@ function Dashboard() {
         {header:'Classes',accessorFn:(x:any)=><Box sx={{display:'flex',gap:.5,flexWrap:'wrap'}}>{(Array.isArray(x?.spec?.serviceClasses) ? x.spec.serviceClasses : []).map((v:string)=><Chip key={v} size="small" label={v}/>)}</Box>},
       ] as any}/>
     </SectionBox>
-    <Typography variant="caption" color="text.secondary">发现 {(ingresses || []).length} 个 Ingress、{(routes || []).length} 个 HTTPRoute、{podByIp.size} 个可寻址 Pod。未带 ExternalDNS 注解的域名标记为 Configured，表示其 DNS 仍在集群外管理。</Typography>
+    <Typography variant="caption" color="text.secondary">发现 {(ingresses || []).length} 个 Ingress、{(routes || []).length} 个 HTTPRoute、{domainRows.length} 个去重域名、{podByIp.size} 个可寻址 Pod。Dry run 表示 ExternalDNS 只预演变更，不会写入权威 DNS；External 表示由集群外系统管理。</Typography>
   </Box>;
 }
 
