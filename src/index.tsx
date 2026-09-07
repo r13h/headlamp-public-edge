@@ -22,7 +22,7 @@ type ExternalSite = {
 const dnsZones = [
   {zone:'gzsijie.com', provider:'Alibaba Cloud ESA DNS', mode:'External'},
   {zone:'gzsijie.cn', provider:'Alibaba Cloud DNS'},
-  {zone:'mzlumora.com', provider:'Alibaba Cloud DNS'},
+  {zone:'mzlumora.com', provider:'Alibaba Cloud ESA DNS', mode:'External'},
   {zone:'andypy.com', provider:'Tencent Cloud DNSPod'},
   {zone:'andy4576.com', provider:'Tencent Cloud DNSPod'},
 ];
@@ -130,6 +130,7 @@ function Dashboard() {
     project:site.name,
     sourceOfTruth:site.sourceOfTruth,
     notes:site.notes || '-',
+    provider:site.provider,
   })));
   const discoveredRows=[...ingressRows,...routeRows,...externalRows];
   const ownershipFor=(zone:any)=>{
@@ -145,11 +146,14 @@ function Dashboard() {
   const domainRows=[...new Set(discoveredRows.map((row:any)=>row.host))].map(host=>{
     const rows=discoveredRows.filter((row:any)=>row.host===host);
     const zone=zoneFor(host);
+    const readOnly=rows.some((row:any)=>row.state==='Read only');
+    const publicationEligible=rows.some((row:any)=>row.managed);
+    const catalogProvider=combine(rows.map((row:any)=>row.provider || '-'));
     return {
       host,
       zone:zone?.zone || 'Unknown',
-      provider:zone?.provider || 'Unassigned',
-      mode:ownershipFor(zone),
+      provider:catalogProvider!=='-' ? catalogProvider : zone?.provider || 'Unassigned',
+      mode:readOnly ? 'Read only' : publicationEligible ? ownershipFor(zone) : zone?.mode || 'Observed',
       source:combine(rows.map((row:any)=>row.source)),
       target:combine(rows.map((row:any)=>row.target)),
       edge:combine(rows.map((row:any)=>row.edge)),
@@ -159,7 +163,7 @@ function Dashboard() {
       projects:combine(rows.map((row:any)=>row.project || '-')),
       sourceOfTruth:combine(rows.map((row:any)=>row.sourceOfTruth || '-')),
       notes:combine(rows.map((row:any)=>row.notes || '-')),
-      readOnly:rows.some((row:any)=>row.state==='Read only'),
+      readOnly,
       declarations:rows.length,
     };
   }).sort((a:any,b:any)=>a.zone.localeCompare(b.zone) || a.host.localeCompare(b.host));
@@ -186,7 +190,7 @@ function Dashboard() {
       <Table data={visibleDomainRows} columns={[
         {header:'Hostname',accessorKey:'host'},
         {header:'Provider',accessorKey:'provider'},
-        {header:'DNS ownership',accessorFn:(x:any)=><StatusLabel status={x.mode==='Managed'?'success':x.mode==='Dry run'?'warning':x.mode==='External'||x.readOnly?'info':'error'}>{x.readOnly ? 'Read only' : x.mode}</StatusLabel>},
+        {header:'DNS ownership',accessorFn:(x:any)=><StatusLabel status={x.mode==='Managed'?'success':x.mode==='Dry run'||x.mode==='Suspended'?'warning':x.mode==='External'||x.mode==='Observed'||x.readOnly?'info':'error'}>{x.mode}</StatusLabel>},
         {header:'Project',accessorKey:'projects'},
         {header:'Declared by',accessorFn:(x:any)=>`${x.source}${x.declarations > 1 ? ` (${x.declarations})` : ''}`},
         {header:'DNS target',accessorKey:'target'},
