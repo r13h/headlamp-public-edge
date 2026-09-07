@@ -20,3 +20,9 @@ managed. It is not a hard-coded claim of DNS control.
 
 The plugin requires read access to `PublicEdge`, `HTTPRoute`, `Ingress`, `Pod`
 and `EndpointSlice` resources.
+
+External CDN and object-storage sites can be listed without transferring
+control to Kubernetes. The plugin reads `sites.json` from the
+`kube-system/public-edge-catalog` ConfigMap and renders those entries in a
+separate `External sites · read only` table. This catalog is observational:
+the plugin never calls a DNS, CDN or object-storage write API.

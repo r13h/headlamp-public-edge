@@ -8,6 +8,17 @@ const PublicEdge = makeCustomResourceClass({apiInfo:[{group:'networking.re8ch.co
 const HTTPRoute = K8s.ResourceClasses.HTTPRoute;
 const HelmRelease = makeCustomResourceClass({apiInfo:[{group:'helm.toolkit.fluxcd.io',version:'v2'}],kind:'HelmRelease',pluralName:'helmreleases',singularName:'helmrelease',isNamespaced:true});
 
+type ExternalSite = {
+  name:string;
+  hostnames:string[];
+  provider:string;
+  delivery:string;
+  origin:string;
+  dnsMode:string;
+  sourceOfTruth:string;
+  notes?:string;
+};
+
 const dnsZones = [
   {zone:'gzsijie.com', provider:'Alibaba Cloud ESA DNS', mode:'External'},
   {zone:'gzsijie.cn', provider:'Alibaba Cloud DNS'},
@@ -37,6 +48,17 @@ function splitNames(value:string) {
   return value.split(',').map(x=>x.trim()).filter(Boolean);
 }
 
+function externalSitesFrom(configMap:any):ExternalSite[] {
+  const raw=configMap?.data?.['sites.json'];
+  if (!raw) return [];
+  try {
+    const parsed=JSON.parse(raw);
+    return Array.isArray(parsed?.sites) ? parsed.sites : [];
+  } catch {
+    return [];
+  }
+}
+
 function ingressTargets(ingress:any) {
   const explicit=annotation(ingress,'external-dns.alpha.kubernetes.io/target');
   if (explicit) return explicit;
@@ -58,6 +80,8 @@ function Dashboard() {
   const [slices] = K8s.ResourceClasses.EndpointSlice.useList({} as any);
   const [ingresses, ingressError] = K8s.ResourceClasses.Ingress.useList({} as any);
   const [services, serviceError] = K8s.ResourceClasses.Service.useList({} as any);
+  const [catalog, catalogError] = K8s.ResourceClasses.ConfigMap.useGet('public-edge-catalog','kube-system');
+  const externalSites=externalSitesFrom(catalog);
   const podByIp = new Map((pods || []).filter((x:any)=>x.status?.podIP).map((x:any)=>[x.status.podIP,x]));
 
   const ingressRows=(ingresses || []).flatMap((ingress:any)=>{
@@ -129,6 +153,7 @@ function Dashboard() {
     <Typography variant="h4">DNS & Public Edge</Typography>
     <Typography color="text.secondary">统一查看域名来源、解析目标、公网出口、Gateway/Ingress、后端 Service 与 UDP/53 DNS 服务。配置写入仍由 GitOps 管理。</Typography>
     {(ingressError || serviceError) && <Alert severity="error">无法读取基础网络资源：{String(ingressError || serviceError)}</Alert>}
+    {catalogError && <Alert severity="warning">无法读取外部站点目录：{String(catalogError)}</Alert>}
     {(edgeError || routeError) && <Alert severity="info">PublicEdge 或 Gateway API 尚未启用；现有 Ingress 域名仍会正常汇总。</Alert>}
     <Tabs value={selectedZone} onChange={(_event,value)=>setSelectedZone(value)} variant="scrollable" scrollButtons="auto" sx={{mt:2,borderBottom:1,borderColor:'divider'}}>
       <Tab value="all" label={`All (${domainRows.length})`}/>
@@ -148,6 +173,18 @@ function Dashboard() {
         {header:'Pod nodes',accessorKey:'nodes'},
       ] as any}/>
     </SectionBox>
+    <SectionBox title={`External sites · read only (${externalSites.length})`}>
+      <Table data={externalSites} columns={[
+        {header:'Project',accessorKey:'name'},
+        {header:'Hostnames',accessorFn:(x:any)=>(x.hostnames || []).join(', ') || '-'},
+        {header:'Provider',accessorKey:'provider'},
+        {header:'Delivery',accessorKey:'delivery'},
+        {header:'Origin',accessorKey:'origin'},
+        {header:'Control',accessorFn:(x:any)=><StatusLabel status="info">{x.dnsMode || 'Read only'}</StatusLabel>},
+        {header:'Source of truth',accessorKey:'sourceOfTruth'},
+        {header:'Notes',accessorKey:'notes'},
+      ] as any}/>
+    </SectionBox>
     <SectionBox title={`Authoritative DNS services (${dnsRows.length})`}>
       <Table data={dnsRows} columns={[
         {header:'Service',accessorKey:'name'},
@@ -165,11 +202,15 @@ function Dashboard() {
         {header:'Public endpoint',accessorFn:(x:any)=>x?.spec?.endpoint?.value || '-'},
         {header:'Gateway VIP',accessorFn:(x:any)=>x?.spec?.gatewayVIP || '-'},
         {header:'Capacity',accessorFn:(x:any)=>(x?.spec?.capacityMbps ?? null) === null ? '-' : `${x.spec.capacityMbps} Mbps`},
-        {header:'State',accessorFn:(x:any)=><StatusLabel status={condition(x,'Ready')?'success':'error'}>{x?.spec?.draining?'Draining':condition(x,'Ready')?'Ready':'Unavailable'}</StatusLabel>},
+        {header:'State',accessorFn:(x:any)=>{
+          const hasReady=(x?.status?.conditions || []).some((item:any)=>item.type==='Ready');
+          const label=x?.spec?.draining?'Draining':hasReady ? (condition(x,'Ready')?'Ready':'Unavailable') : 'Declared';
+          return <StatusLabel status={label==='Ready'?'success':label==='Declared'?'info':'error'}>{label}</StatusLabel>;
+        }},
         {header:'Classes',accessorFn:(x:any)=><Box sx={{display:'flex',gap:.5,flexWrap:'wrap'}}>{(Array.isArray(x?.spec?.serviceClasses) ? x.spec.serviceClasses : []).map((v:string)=><Chip key={v} size="small" label={v}/>)}</Box>},
       ] as any}/>
     </SectionBox>
-    <Typography variant="caption" color="text.secondary">发现 {(ingresses || []).length} 个 Ingress、{(routes || []).length} 个 HTTPRoute、{domainRows.length} 个去重域名、{podByIp.size} 个可寻址 Pod。Dry run 表示 ExternalDNS 只预演变更，不会写入权威 DNS；External 表示由集群外系统管理。</Typography>
+    <Typography variant="caption" color="text.secondary">发现 {(ingresses || []).length} 个 Ingress、{(routes || []).length} 个 HTTPRoute、{domainRows.length} 个去重域名、{externalSites.length} 个外部只读项目、{podByIp.size} 个可寻址 Pod。Dry run 表示 ExternalDNS 只预演变更，不会写入权威 DNS；External 与 Read only 表示由集群外系统管理，本页面不会修改其 DNS、CDN 或存储桶。</Typography>
   </Box>;
 }
 
