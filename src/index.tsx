@@ -37,7 +37,12 @@ function combine(values:string[]) {
 }
 
 function condition(item:any, type:string) {
-  return item.status?.conditions?.find((x:any)=>x.type===type)?.status === 'True';
+  const data=item?.jsonData || item;
+  return data?.status?.conditions?.find((x:any)=>x.type===type)?.status === 'True';
+}
+
+function resourceData(item:any) {
+  return item?.jsonData || item || {};
 }
 
 function annotation(item:any, key:string) {
@@ -115,7 +120,7 @@ function Dashboard() {
   const discoveredRows=[...ingressRows,...routeRows];
   const ownershipFor=(zone:any)=>{
     if (!zone || zone.mode==='External') return zone?.mode || 'Unmanaged';
-    const release:any=(helmReleases || []).find((item:any)=>(item.spec?.values?.domainFilters || []).includes(zone.zone));
+    const release:any=(helmReleases || []).map(resourceData).find((item:any)=>(item.spec?.values?.domainFilters || []).includes(zone.zone));
     if (!release) return 'Unmanaged';
     if (release.spec?.suspend) return 'Suspended';
     const dryRun=release.spec?.values?.extraArgs?.['dry-run'];
@@ -145,7 +150,7 @@ function Dashboard() {
     name:`${service.metadata?.namespace || 'default'}/${service.metadata?.name}`,
     type:service.spec?.type || 'ClusterIP',
     clusterIP:service.spec?.clusterIP || '-',
-    external:(service.status?.loadBalancer?.ingress || []).map((x:any)=>x.hostname || x.ip).filter(Boolean).join(', ') || service.spec?.externalIPs?.join(', ') || '-',
+    external:annotation(service,'networking.re8ch.com/public-endpoint') || (service.status?.loadBalancer?.ingress || []).map((x:any)=>x.hostname || x.ip).filter(Boolean).join(', ') || service.spec?.externalIPs?.join(', ') || '-',
     ports:(service.spec?.ports || []).filter((port:any)=>port.port===53).map((port:any)=>`${port.port}/${port.protocol}`).join(', '),
   }));
 
@@ -196,18 +201,19 @@ function Dashboard() {
     </SectionBox>
     <SectionBox title={`Public exits (${(edges || []).length})`}>
       <Table data={edges || []} columns={[
-        {header:'Candidate',accessorFn:(x:any)=>x?.metadata?.name || '-'},
-        {header:'Area / Region',accessorFn:(x:any)=>`${x?.spec?.area || '-'} / ${x?.spec?.region || '-'}`},
-        {header:'Node',accessorFn:(x:any)=>x?.spec?.nodeName || '-'},
-        {header:'Public endpoint',accessorFn:(x:any)=>x?.spec?.endpoint?.value || '-'},
-        {header:'Gateway VIP',accessorFn:(x:any)=>x?.spec?.gatewayVIP || '-'},
-        {header:'Capacity',accessorFn:(x:any)=>(x?.spec?.capacityMbps ?? null) === null ? '-' : `${x.spec.capacityMbps} Mbps`},
+        {header:'Candidate',accessorFn:(x:any)=>resourceData(x)?.metadata?.name || '-'},
+        {header:'Area / Region',accessorFn:(x:any)=>`${resourceData(x)?.spec?.area || '-'} / ${resourceData(x)?.spec?.region || '-'}`},
+        {header:'Node',accessorFn:(x:any)=>resourceData(x)?.spec?.nodeName || '-'},
+        {header:'Public endpoint',accessorFn:(x:any)=>resourceData(x)?.spec?.endpoint?.value || '-'},
+        {header:'Gateway VIP',accessorFn:(x:any)=>resourceData(x)?.spec?.gatewayVIP || '-'},
+        {header:'Capacity',accessorFn:(x:any)=>(resourceData(x)?.spec?.capacityMbps ?? null) === null ? '-' : `${resourceData(x).spec.capacityMbps} Mbps`},
         {header:'State',accessorFn:(x:any)=>{
-          const hasReady=(x?.status?.conditions || []).some((item:any)=>item.type==='Ready');
-          const label=x?.spec?.draining?'Draining':hasReady ? (condition(x,'Ready')?'Ready':'Unavailable') : 'Declared';
+          const data=resourceData(x);
+          const hasReady=(data?.status?.conditions || []).some((item:any)=>item.type==='Ready');
+          const label=data?.spec?.draining?'Draining':hasReady ? (condition(data,'Ready')?'Ready':'Unavailable') : 'Declared';
           return <StatusLabel status={label==='Ready'?'success':label==='Declared'?'info':'error'}>{label}</StatusLabel>;
         }},
-        {header:'Classes',accessorFn:(x:any)=><Box sx={{display:'flex',gap:.5,flexWrap:'wrap'}}>{(Array.isArray(x?.spec?.serviceClasses) ? x.spec.serviceClasses : []).map((v:string)=><Chip key={v} size="small" label={v}/>)}</Box>},
+        {header:'Classes',accessorFn:(x:any)=>{const data=resourceData(x); return <Box sx={{display:'flex',gap:.5,flexWrap:'wrap'}}>{(Array.isArray(data?.spec?.serviceClasses) ? data.spec.serviceClasses : []).map((v:string)=><Chip key={v} size="small" label={v}/>)}</Box>;}},
       ] as any}/>
     </SectionBox>
     <Typography variant="caption" color="text.secondary">发现 {(ingresses || []).length} 个 Ingress、{(routes || []).length} 个 HTTPRoute、{domainRows.length} 个去重域名、{externalSites.length} 个外部只读项目、{podByIp.size} 个可寻址 Pod。Dry run 表示 ExternalDNS 只预演变更，不会写入权威 DNS；External 与 Read only 表示由集群外系统管理，本页面不会修改其 DNS、CDN 或存储桶。</Typography>
