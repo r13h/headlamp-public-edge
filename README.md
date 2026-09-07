@@ -14,6 +14,9 @@ The GZSJ build groups duplicate Ingress and HTTPRoute declarations by hostname
 and maps each hostname to its authoritative zone and provider. Alibaba Cloud DNS
 and Tencent Cloud DNSPod zones are shown as `Dry run` until their ExternalDNS
 controllers are explicitly promoted; the ESA-managed zone remains `External`.
+Scrollable zone tabs separate each root domain. For ExternalDNS zones, ownership
+is derived from the live Flux HelmRelease: suspended, not ready, dry-run, or
+managed. It is not a hard-coded claim of DNS control.
 
 The plugin requires read access to `PublicEdge`, `HTTPRoute`, `Ingress`, `Pod`
 and `EndpointSlice` resources.
